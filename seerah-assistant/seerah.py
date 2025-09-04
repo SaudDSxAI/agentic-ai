@@ -1,16 +1,16 @@
-# seerah.py
+# seerah_gemini.py
 """
-Simple RAG Assistant using LangChain + OpenAI
+Simple RAG Assistant using LangChain + Google Gemini
 
 Steps:
 1. Create a .env file in the same folder with:
-   OPENAI_API_KEY=your_api_key_here
+   GOOGLE_API_KEY=your_api_key_here
 
 2. Install dependencies:
-   pip install langchain langchain-openai langchain-community openai faiss-cpu pdfplumber python-dotenv tiktoken
+   pip install langchain langchain-google-genai langchain-community google-generativeai faiss-cpu pdfplumber python-dotenv tiktoken
 
 3. Run:
-   python seerah.py
+   python seerah_gemini.py
 """
 
 import os
@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 import pdfplumber
 
 from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_google_genai import GoogleGenerativeAIEmbeddings, ChatGoogleGenerativeAI
 from langchain_community.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 
@@ -26,9 +26,9 @@ from langchain.chains import RetrievalQA
 # Load API key
 # ------------------------------
 load_dotenv()
-api_key = os.getenv("OPENAI_API_KEY")
+api_key = os.getenv("GOOGLE_API_KEY")
 if not api_key:
-    raise ValueError("OPENAI_API_KEY not found in .env file")
+    raise ValueError("GOOGLE_API_KEY not found in .env file")
 
 
 # ------------------------------
@@ -58,9 +58,9 @@ def split_text(text: str):
 # 3. Build vectorstore
 # ------------------------------
 def build_vectorstore(chunks):
-    embeddings = OpenAIEmbeddings(
-        model="text-embedding-3-small",
-        api_key=api_key
+    embeddings = GoogleGenerativeAIEmbeddings(
+        model="models/embedding-001",
+        google_api_key=api_key
     )
     return FAISS.from_texts(chunks, embeddings)
 
@@ -69,13 +69,14 @@ def build_vectorstore(chunks):
 # 4. Create QA chain
 # ------------------------------
 def make_qa_chain(vectorstore):
-    llm = ChatOpenAI(
-        model="gpt-4o-mini",
+    llm = ChatGoogleGenerativeAI(
+        model="models/gemini-1.5-pro",  # ✅ full ID instead of "gemini-pro"
         temperature=0,
-        api_key=api_key
+        google_api_key=api_key
     )
     retriever = vectorstore.as_retriever(search_kwargs={"k": 4})
     return RetrievalQA.from_chain_type(llm=llm, retriever=retriever)
+
 
 
 # ------------------------------
@@ -88,10 +89,11 @@ if __name__ == "__main__":
     vectorstore = build_vectorstore(chunks)
     qa = make_qa_chain(vectorstore)
 
-    print("\nSeerah Assistant ready! Type 'exit' to quit.\n")
+    print("\nSeerah Assistant (Gemini) ready! Type 'exit' to quit.\n")
     while True:
         query = input("You: ")
         if query.lower() in ["exit", "quit"]:
             break
-        answer = qa.run(query)
-        print("Assistant:", answer)
+        answer = qa.invoke({"query": query})
+        print("Assistant:", answer["result"])
+

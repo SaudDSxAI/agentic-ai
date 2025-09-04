@@ -1,141 +1,98 @@
-# read_book.py
-
-"""
-Script to generate question-answer pairs from a PDF named `my.pdf` in the current directory.
-
-Setup:
-1. Create a `.env` file in the same folder with:
-    OPENAI_API_KEY=your_openai_api_key_here
-
-2. Install dependencies:
-    pip install langchain-community openai python-dotenv tiktoken PyPDF2
-"""
-
 import os
-import json
+import fitz  # PyMuPDF
 from dotenv import load_dotenv
-from langchain_community.chat_models import ChatOpenAI
-from langchain.prompts import ChatPromptTemplate
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from PyPDF2 import PdfReader
+from langchain_openai import OpenAIEmbeddings, ChatOpenAI
+from langchain_community.vectorstores import FAISS
+from langchain.schema import Document
 
-# ------------------------------
-# Load environment variables
-# ------------------------------
+# ------------------------
+# 1. Load API Key
+# ------------------------
 load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise ValueError("OPENAI_API_KEY not found in .env file")
 
-# ------------------------------
-# Function to load PDF content
-# ------------------------------
-def load_pdf(file_path: str) -> str:
-    try:
-        reader = PdfReader(file_path)
-        text = ""
-        for page in reader.pages:
-            page_text = page.extract_text()
-            if page_text:
-                text += page_text + "\n"
-        return text
-    except Exception as e:
-        print(f"Error reading PDF: {e}")
-        return ""
+# ------------------------
+# 2. Load Documents (Quran PDF with PyMuPDF)
+# ------------------------
+pdf_path = "data/quran.pdf"   # replace with your own file
+doc = fitz.open(pdf_path)
 
-# ------------------------------
-# Function to split text into chunks
-# ------------------------------
-def split_text(text: str, chunk_size: int = 1000, chunk_overlap: int = 200):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=chunk_size,
-        chunk_overlap=chunk_overlap
-    )
-    return splitter.split_text(text)
+ayah_docs = []
+for page_num, page in enumerate(doc, 1):
+    text = page.get_text("text")
+    ayahs = text.split("\n")  # assume each line is one ayah
+    for ayah in ayahs:
+        ayah_text = ayah.strip()
+        if len(ayah_text) > 0:
+            ayah_docs.append(
+                Document(page_content=ayah_text, metadata={"page": page_num})
+            )
 
-# ------------------------------
-# Function to generate Q&A pairs
-# ------------------------------
-def generate_qa_pairs(chunk: str, model_name: str = "gpt-4") -> list:
-    chat = ChatOpenAI(model_name=model_name, openai_api_key=api_key, temperature=0.7)
+print(f"✅ Total ayah-level docs created: {len(ayah_docs)}")
 
-    prompt_template = """
-    You are an AI tutor. Generate 3 high-quality question-answer pairs
-    based on the following text. Each pair should be concise and clear.
+# ------------------------
+# 3. Create Vector DB (FAISS) with Stronger Embeddings
+# ------------------------
+embeddings = OpenAIEmbeddings(
+    openai_api_key=api_key,
+    model="text-embedding-3-large"   # better for multilingual + semantic precision
+)
+vectorstore = FAISS.from_documents(ayah_docs, embeddings)
 
-    Text:
-    {text}
+# ------------------------
+# 4. LLM Setup
+# ------------------------
+llm = ChatOpenAI(
+    openai_api_key=api_key,
+    model="gpt-4o-mini",  # or "gpt-3.5-turbo"
+    temperature=0
+)
 
-    Format strictly as JSON list of objects:
-    [
-        {{"question": "Question1", "answer": "Answer1"}},
-        {{"question": "Question2", "answer": "Answer2"}},
-        {{"question": "Question3", "answer": "Answer3"}}
-    ]
-    """
-    prompt = ChatPromptTemplate.from_template(prompt_template)
+# ------------------------
+# 5. System Prompt
+# ------------------------
+system_prompt = """
+You are a helpful assistant that ONLY answers questions using the Quran passages provided.
+If the answer is not in the Quran, you must respond strictly with:
+"I don’t know. I can only answer based on the Quran."
+Always cite the Surah and Ayah if available.
+"""
 
-    try:
-        response = chat.invoke(prompt.format_messages(text=chunk))
+# ------------------------
+# 6. Function to Answer Queries (with Debug Mode)
+# ------------------------
+def answer(query: str, top_k: int = 5) -> str:
+    """Return assistant response for a given query, with debug info."""
+    docs_and_scores = vectorstore.similarity_search_with_score(query, k=top_k)
 
-        # Extract text safely
-        if hasattr(response, "content"):
-            content = response.content
-        else:
-            content = str(response)
+    if not docs_and_scores:
+        return "I don’t know. I can only answer based on the Quran."
 
-        # Parse JSON safely
-        qa_list = json.loads(content)
-        return [{"user": qa["question"], "assistant": qa["answer"]} for qa in qa_list]
-    except Exception as e:
-        print(f"Error generating/parsing Q&A: {e}")
-        return []
+    print("\n🔍 Retrieved passages:")
+    for i, (doc, score) in enumerate(docs_and_scores, 1):
+        print(f"{i}. [Score={score:.4f}] {doc.page_content[:200]}...")
 
-# ------------------------------
-# Function to save QA pairs to JSONL
-# ------------------------------
-def save_to_jsonl(qa_pairs: list, output_file: str):
-    try:
-        with open(output_file, "w", encoding="utf-8") as f:
-            for pair in qa_pairs:
-                f.write(json.dumps(pair, ensure_ascii=False) + "\n")
-        print(f"Saved {len(qa_pairs)} Q&A pairs to {output_file}")
-    except Exception as e:
-        print(f"Error saving JSONL: {e}")
+    retrieved_text = "\n\n".join([doc.page_content for doc, _ in docs_and_scores])
 
-# ------------------------------
-# Main function
-# ------------------------------
-def main():
-    pdf_file = "my.pdf"  # fixed name
-    output_file = "qa_output.jsonl"  # fixed output file
+    query_with_context = f"{system_prompt}\n\nContext from Quran:\n{retrieved_text}\n\nQuestion: {query}"
+    response = llm.invoke(query_with_context)
 
-    if not os.path.exists(pdf_file):
-        print(f"File {pdf_file} not found in current directory.")
-        return
+    return response.content.strip()
 
-    print(f"Loading {pdf_file}...")
-    text = load_pdf(pdf_file)
-    if not text.strip():
-        print("No text found in PDF.")
-        return
+# ------------------------
+# 7. Interactive Chatbot Loop
+# ------------------------
+def chat():
+    print("📖 Quran Assistant (type 'exit' to quit)\n")
+    while True:
+        query = input("You: ")
+        if query.lower() in ["exit", "quit", "q"]:
+            print("Assistant: Goodbye! 👋")
+            break
+        response = answer(query)
+        print(f"Assistant: {response}\n")
 
-    print("Splitting text into chunks...")
-    chunks = split_text(text)
-    print(f"Total chunks: {len(chunks)}")
-
-    all_qa_pairs = []
-    for i, chunk in enumerate(chunks):
-        print(f"Processing chunk {i+1}/{len(chunks)}...")
-        qa_pairs = generate_qa_pairs(chunk)
-        all_qa_pairs.extend(qa_pairs)
-
-    print(f"Saving Q&A pairs to {output_file}...")
-    save_to_jsonl(all_qa_pairs, output_file)
-    print("Done!")
-
-# ------------------------------
-# Run the script
-# ------------------------------
 if __name__ == "__main__":
-    main()
+    chat()

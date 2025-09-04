@@ -1,8 +1,9 @@
-pdfplumber
 langchain
+langchain-google-genai
 langchain-community
-langchain-openai
-chromadb
-openai
-tiktoken
+google-generativeai
+faiss-cpu
+pdfplumber
 python-dotenv
+tiktoken
+pymupdf
